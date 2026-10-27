@@ -1,0 +1,14 @@
+{
+  "sklearn": "1.9.0",
+  "seeds": [
+    0,
+    1
+  ],
+  "n_splits": 3,
+  "group_column": "session_id",
+  "rows": 120,
+  "legit": 84,
+  "fake": 36,
+  "groups": 23,
+  "folds_skipped_single_class": 0
+}

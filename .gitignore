@@ -1,0 +1,72 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime scan output
+current_scan.csv
+
+# Generated reports
+Threat_Report_*.pdf
+
+# Temporary/generated files
+*.tmp
+*.temp
+
+# Runtime state / generated data
+adaptive_threshold_state.json
+alert_history.csv
+behavioral_audit_log.json
+threat_intelligence_cache.json
+training_dataset_backup.csv
+dashboard_settings.json
+scan_history.csv
+performance_benchmark.json
+performance_benchmark_latest.json
+
+# Generated PDF reports
+reports/
+
+# Node.js (not needed for Python project)
+node_modules/
+pnpm-lock.yaml
+
+# Research evaluation outputs (generated)
+research_evaluation_output/
+
+# Research papers (large PDFs - keep separate)
+research_papers/
+
+# Pickle model files (too large / binary)
+# Uncomment below if you want to exclude them:
+# *.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+
+# WiFi fingerprint runtime state
+wifi_fingerprint_baseline.json

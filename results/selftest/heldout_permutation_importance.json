@@ -1,0 +1,27 @@
+[
+  {
+    "feature": "RSSI",
+    "label": "RSSI",
+    "importance": 0.165278
+  },
+  {
+    "feature": "Signal_Var",
+    "label": "Signal variance",
+    "importance": 0.022917
+  },
+  {
+    "feature": "AP_Count",
+    "label": "AP count",
+    "importance": 0.007292
+  },
+  {
+    "feature": "Channel",
+    "label": "Channel (MHz)",
+    "importance": 0.003472
+  },
+  {
+    "feature": "Security_enc",
+    "label": "Security",
+    "importance": 0.0
+  }
+]

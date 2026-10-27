@@ -1,0 +1,31 @@
+model,held_out_attack,seed,recall_unseen,fpr,roc_auc
+RF,open_clone,0,1.0,0.03333333333333333,1.0
+KNN,open_clone,0,1.0,0.03333333333333333,0.9833333333333334
+IsolationForest,open_clone,0,0.5833333333333334,0.16666666666666666,0.8555555555555556
+RF+KNN (no IF),open_clone,0,1.0,0.03333333333333333,1.0
+Hybrid stacked,open_clone,0,1.0,0.03333333333333333,1.0
+RF,other_channel,0,0.8333333333333334,0.03333333333333333,0.9916666666666667
+KNN,other_channel,0,1.0,0.03333333333333333,1.0
+IsolationForest,other_channel,0,0.5,0.16666666666666666,0.8138888888888889
+RF+KNN (no IF),other_channel,0,1.0,0.03333333333333333,0.9916666666666667
+Hybrid stacked,other_channel,0,1.0,0.03333333333333333,0.9972222222222222
+RF,wpa2_clone,0,0.75,0.0,1.0
+KNN,wpa2_clone,0,0.8333333333333334,0.03333333333333333,0.9944444444444445
+IsolationForest,wpa2_clone,0,0.25,0.16666666666666666,0.7194444444444444
+RF+KNN (no IF),wpa2_clone,0,0.8333333333333334,0.03333333333333333,0.9944444444444445
+Hybrid stacked,wpa2_clone,0,0.8333333333333334,0.0,0.9944444444444445
+RF,open_clone,1,1.0,0.0,1.0
+KNN,open_clone,1,1.0,0.0,1.0
+IsolationForest,open_clone,1,1.0,0.03333333333333333,1.0
+RF+KNN (no IF),open_clone,1,1.0,0.0,1.0
+Hybrid stacked,open_clone,1,1.0,0.0,1.0
+RF,other_channel,1,0.75,0.0,1.0
+KNN,other_channel,1,1.0,0.0,1.0
+IsolationForest,other_channel,1,0.75,0.03333333333333333,0.9888888888888889
+RF+KNN (no IF),other_channel,1,1.0,0.0,1.0
+Hybrid stacked,other_channel,1,1.0,0.0,1.0
+RF,wpa2_clone,1,0.6666666666666666,0.0,1.0
+KNN,wpa2_clone,1,0.8333333333333334,0.0,1.0
+IsolationForest,wpa2_clone,1,0.75,0.03333333333333333,0.9888888888888889
+RF+KNN (no IF),wpa2_clone,1,0.75,0.0,1.0
+Hybrid stacked,wpa2_clone,1,0.75,0.0,1.0
