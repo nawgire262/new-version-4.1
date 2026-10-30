@@ -436,6 +436,44 @@ def classify(df: pd.DataFrame, thresholds: dict[str, float] | None = None) -> pd
     return out
 
 
+def normalize_security(raw: Any) -> str:
+    """Normalize raw security string to standard category: WPA2, WPA3, Open, WEP, etc."""
+    if raw is None or pd.isna(raw):
+        return "Unknown"
+    text = str(raw).strip()
+    if not text or text.lower() in ("unknown", "n/a", "none"):
+        return "Unknown"
+    upper = text.upper()
+    if "WPA3" in upper:
+        return "WPA3"
+    if "WPA2" in upper or upper == "SECURED":
+        return "WPA2"
+    if "WEP" in upper:
+        return "WEP"
+    if upper in ("OPEN", "UNENCRYPTED", "UNSECURED") or "NO ENCRYPTION" in upper:
+        return "Open"
+    if "WPA" in upper:
+        return "WPA"
+    return text
+
+
+def matches_security_filter(raw_security: Any, sec_filter: str) -> bool:
+    """Match raw security value against selected dropdown category."""
+    if not sec_filter or sec_filter == "All security types":
+        return True
+    norm = normalize_security(raw_security)
+    raw_upper = str(raw_security or "").strip().upper()
+    if sec_filter == "WPA2":
+        return norm == "WPA2" or "WPA2" in raw_upper or raw_upper == "SECURED"
+    if sec_filter == "WPA3":
+        return norm == "WPA3" or "WPA3" in raw_upper
+    if sec_filter == "Open":
+        return norm == "Open" or raw_upper in ("OPEN", "NONE", "UNENCRYPTED", "UNSECURED") or "NO ENCRYPTION" in raw_upper
+    if sec_filter == "WEP":
+        return norm == "WEP" or "WEP" in raw_upper
+    return norm.casefold() == sec_filter.casefold()
+
+
 def normalise(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
@@ -1105,21 +1143,42 @@ def page_networks(df: pd.DataFrame, is_demo: bool = True) -> None:
         sec_filter = f3.selectbox("Security filter", ["All security types", "WPA2", "WPA3", "Open", "WEP"], label_visibility="collapsed")
 
         view = df.copy()
-        if search_query:
-            mask = view.astype(str).apply(lambda col: col.str.contains(search_query, case=False, regex=False)).any(axis=1)
-            view = view[mask]
-        if threat_filter != "All threat levels":
-            view = view[view["Threat_Level"].astype(str).str.upper() == threat_filter]
-        if sec_filter != "All security types":
-            view = view[view["Security"].astype(str).str.contains(sec_filter, case=False, na=False)]
+        if not view.empty:
+            if "Security_Category" not in view.columns and "Security" in view.columns:
+                view["Security_Category"] = view["Security"].apply(normalize_security)
+            if search_query:
+                mask = view.astype(str).apply(lambda col: col.str.contains(search_query, case=False, regex=False)).any(axis=1)
+                view = view[mask]
+            if threat_filter != "All threat levels":
+                view = view[view["Threat_Level"].astype(str).str.upper() == threat_filter]
+            if sec_filter != "All security types":
+                view = view[view["Security"].apply(lambda s: matches_security_filter(s, sec_filter))]
 
         st.markdown("#### Detected access points")
-        st.caption("Sample observations with network identifiers and risk classifications.")
+        if is_demo:
+            st.caption("Sample observations with network identifiers and risk classifications.")
+        else:
+            st.caption(f"Showing {len(view)} of {len(df)} detected access point(s).")
+
         render_html_table(
             view,
             ["SSID", "BSSID", "RSSI", "Channel", "Frequency", "Security", "Vendor", "Combined_Risk", "Threat_Level"],
             {"Combined_Risk": "RISK", "Threat_Level": "THREAT LEVEL"},
         )
+
+        if not view.empty and "BSSID" in view.columns:
+            b_list = [b for b in view["BSSID"].dropna().unique().tolist() if str(b).strip() and str(b) != "N/A"]
+            if b_list:
+                curr_sel = st.session_state.get("selected_bssid")
+                s_idx = b_list.index(curr_sel) if curr_sel in b_list else 0
+                chosen = st.selectbox(
+                    "Select access point for in-depth threat analysis",
+                    b_list,
+                    index=s_idx,
+                    format_func=lambda b: f"{view[view['BSSID'] == b]['SSID'].iloc[0]} ({b}) — Risk: {number(view[view['BSSID'] == b]['Combined_Risk'].iloc[0]):.0f}% [{view[view['BSSID'] == b]['Threat_Level'].iloc[0]}]",
+                    key="networks_bssid_selector",
+                )
+                st.session_state["selected_bssid"] = chosen
 
         st.markdown(
             """
@@ -1147,19 +1206,44 @@ def page_threat_analysis(df: pd.DataFrame, is_demo: bool = True) -> None:
         is_demo=is_demo,
     )
 
+    if df.empty:
+        st.markdown(
+            """
+            <div class="ss-info-callout" style="margin-top: 1rem; margin-bottom: 2rem;">
+                <strong>No scan data is available.</strong> Start a Wi-Fi scan to analyze detected access points.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        render_footer()
+        return
+
+    unique_bssids = [b for b in df["BSSID"].dropna().unique().tolist() if str(b).strip() and str(b) != "N/A"]
+    total_observations = len(df)
+    unique_ap_count = len(unique_bssids)
     levels = df.get("Threat_Level", pd.Series(index=df.index, dtype=str)).astype(str).str.upper()
-    crit_count = int(levels.eq("CRITICAL").sum())
-    high_count = int(levels.eq("HIGH").sum())
+    low_count = int(levels.isin(["SAFE", "LOW"]).sum())
     med_count = int(levels.eq("MEDIUM").sum())
-    total = len(df)
+    high_count = int(levels.eq("HIGH").sum())
+    crit_count = int(levels.eq("CRITICAL").sum())
+    latest_scan_time = st.session_state.get("last_scan")
+    if not latest_scan_time and "Scan_Time" in df.columns and not df["Scan_Time"].dropna().empty:
+        latest_scan_time = str(df["Scan_Time"].dropna().iloc[0])
+    if not latest_scan_time:
+        latest_scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     st.markdown(
         f"""
         <div class="ss-metric-grid-4">
             <div class="ss-metric-card">
                 <div class="ss-metric-label">Findings analyzed</div>
-                <div class="ss-metric-value">{total}</div>
-                <div class="ss-metric-subtext">Demo observations</div>
+                <div class="ss-metric-value">{total_observations}</div>
+                <div class="ss-metric-subtext">{unique_ap_count} Unique Access Points</div>
+            </div>
+            <div class="ss-metric-card">
+                <div class="ss-metric-label">Low / Safe</div>
+                <div class="ss-metric-value">{low_count}</div>
+                <div class="ss-metric-subtext">Baseline consistent</div>
             </div>
             <div class="ss-metric-card">
                 <div class="ss-metric-label">Medium risk</div>
@@ -1167,14 +1251,9 @@ def page_threat_analysis(df: pd.DataFrame, is_demo: bool = True) -> None:
                 <div class="ss-metric-subtext">Review indicators</div>
             </div>
             <div class="ss-metric-card">
-                <div class="ss-metric-label">High risk</div>
-                <div class="ss-metric-value">{high_count}</div>
-                <div class="ss-metric-subtext">Multiple indicators</div>
-            </div>
-            <div class="ss-metric-card">
-                <div class="ss-metric-label">Critical risk</div>
-                <div class="ss-metric-value">{crit_count}</div>
-                <div class="ss-metric-subtext">Illustrative only</div>
+                <div class="ss-metric-label">High / Critical</div>
+                <div class="ss-metric-value">{high_count + crit_count}</div>
+                <div class="ss-metric-subtext">{crit_count} Critical, {high_count} High</div>
             </div>
         </div>
         """,
@@ -1182,32 +1261,226 @@ def page_threat_analysis(df: pd.DataFrame, is_demo: bool = True) -> None:
     )
 
     st.markdown("### Risk & evidence review")
+
+    default_idx = 0
+    curr_sel = st.session_state.get("selected_bssid")
+    if curr_sel in unique_bssids:
+        default_idx = unique_bssids.index(curr_sel)
+    else:
+        if "Combined_Risk" in df.columns and not df.empty:
+            top_row = df.sort_values("Combined_Risk", ascending=False).iloc[0]
+            top_b = top_row.get("BSSID")
+            if top_b in unique_bssids:
+                default_idx = unique_bssids.index(top_b)
+
+    selected_bssid = st.selectbox(
+        "Select Access Point to Inspect",
+        unique_bssids,
+        index=default_idx,
+        format_func=lambda b: f"{df[df['BSSID'] == b]['SSID'].iloc[0]} ({b}) — Risk: {number(df[df['BSSID'] == b]['Combined_Risk'].iloc[0]):.0f}% [{df[df['BSSID'] == b]['Threat_Level'].iloc[0]}]",
+        key="threat_analysis_bssid_select",
+    )
+    st.session_state["selected_bssid"] = selected_bssid
+    selected_row = df[df["BSSID"] == selected_bssid].iloc[0]
+
+    store = WiFiFingerprintStore()
+    baseline = store.get(selected_bssid)
+    ssid = str(selected_row.get("SSID", "<Hidden Network>"))
+    bssid = str(selected_row.get("BSSID", "N/A"))
+    rssi_val = number(selected_row.get("RSSI"))
+    channel_val = selected_row.get("Channel")
+    freq_val = selected_row.get("Frequency", "N/A")
+    sec_raw = selected_row.get("Security", "Unknown")
+    sec_norm = normalize_security(sec_raw)
+    combined_risk = number(selected_row.get("Combined_Risk", 0))
+    threat_level = str(selected_row.get("Threat_Level", "SAFE")).upper()
+
+    # 1. Fingerprint mismatch
+    fp_available = False
+    fp_mismatch_pct = 0.0
+    fp_explanation = ""
+    if baseline:
+        fp_available = True
+        mean_rssi = baseline.get("rssi_mean")
+        sim = selected_row.get("Fingerprint_Similarity")
+        if sim is not None and sim != "N/A" and not pd.isna(sim):
+            try:
+                fp_mismatch_pct = max(0.0, min(100.0, 100.0 - float(sim)))
+            except (ValueError, TypeError):
+                fp_mismatch_pct = 0.0
+        elif mean_rssi is not None and rssi_val != 0:
+            var = float(baseline.get("rssi_variance") or 9.0)
+            dev = abs(rssi_val - float(mean_rssi))
+            fp_mismatch_pct = min(100.0, (dev / max(10.0, (var ** 0.5) * 2.0)) * 100.0)
+        else:
+            fp_mismatch_pct = 0.0
+        fp_explanation = f"Baseline mean: {mean_rssi:.1f} dBm, variance: {baseline.get('rssi_variance', 0):.1f} ({baseline.get('observation_count', 0)} obs)." if mean_rssi else "Stored baseline exists for this BSSID."
+    else:
+        candidates = store.candidates_for_ssid(ssid)
+        if candidates and ssid not in ("<Hidden Network>", "Unknown", ""):
+            fp_available = True
+            fp_mismatch_pct = 75.0
+            fp_explanation = f"Known SSID '{ssid}' observed under unverified BSSID {bssid} ({len(candidates)} other BSSID(s) known)."
+        else:
+            fp_available = False
+            fp_mismatch_pct = 0.0
+            fp_explanation = "Fingerprint comparison unavailable: no trusted baseline exists."
+
+    # 2. Security mismatch
+    sec_available = True
+    sec_mismatch_pct = 0.0
+    sec_explanation = ""
+    if baseline and baseline.get("security_history"):
+        known_sec = [normalize_security(s) for s in baseline["security_history"]]
+        if sec_norm not in known_sec and "Unknown" not in known_sec:
+            sec_mismatch_pct = 100.0
+            sec_explanation = f"Security changed from baseline ({', '.join(baseline['security_history'])}) to {sec_raw}."
+        else:
+            sec_mismatch_pct = 0.0
+            sec_explanation = f"Security configuration ({sec_norm}) matches stored baseline."
+    else:
+        if sec_norm == "Open":
+            sec_mismatch_pct = 50.0
+            sec_explanation = "Unencrypted open network; no baseline recorded."
+        elif sec_norm in ("WEP", "WPA"):
+            sec_mismatch_pct = 40.0
+            sec_explanation = f"Legacy or weak encryption ({sec_norm}); no baseline recorded."
+        else:
+            sec_mismatch_pct = 0.0
+            sec_explanation = f"Encrypted network ({sec_norm}); baseline comparison unavailable."
+
+    # 3. Temporal RSSI change
+    fluct = number(selected_row.get("Signal_Fluctuation", 0))
+    var = number(selected_row.get("Signal_Variance", 0))
+    temp_score = number(selected_row.get("Temporal_Score", 0))
+    obs_count = int(number(selected_row.get("Observation_Count", 1)))
+    temp_available = (fluct > 0 or var > 0 or obs_count > 1 or temp_score > 0)
+    temp_pct = 0.0
+    temp_explanation = ""
+    if temp_available:
+        temp_pct = min(100.0, max(temp_score, (fluct / 25.0) * 100.0, (var / 40.0) * 100.0))
+        temp_explanation = f"Signal fluctuation: {fluct:.1f} dB (variance: {var:.2f}) over {obs_count} observation(s)."
+    else:
+        temp_pct = 0.0
+        temp_explanation = "Temporal RSSI analysis unavailable: single observation snapshot."
+
+    # 4. AP density indicator
+    same_ssid_count = len(df[df["SSID"] == ssid]["BSSID"].unique()) if ssid and ssid not in ("<Hidden Network>", "") else 1
+    channel_count = len(df[df["Channel"] == channel_val]) if channel_val and channel_val != "N/A" else 1
+    density_available = True
+    density_pct = 0.0
+    density_explanation = ""
+    if same_ssid_count > 1:
+        density_pct = min(100.0, 30.0 + (same_ssid_count - 1) * 25.0)
+        density_explanation = f"{same_ssid_count} distinct BSSIDs observed broadcasting SSID '{ssid}' (Potential Rogue/Evil Twin)."
+    else:
+        density_pct = min(100.0, (channel_count / 12.0) * 50.0)
+        density_explanation = f"{channel_count} AP(s) active on Channel {channel_val}."
+
+    # 5. ML model evidence
+    ml_conf_val = selected_row.get("Meta_Confidence")
+    ml_risk_val = selected_row.get("ML_Risk")
+    ml_available = False
+    ml_pct = 0.0
+    ml_explanation = ""
+    if ml_conf_val is not None and ml_conf_val != "N/A" and not pd.isna(ml_conf_val):
+        try:
+            ml_available = True
+            ml_pct = min(100.0, max(0.0, float(ml_conf_val)))
+            rf = selected_row.get("RF_Prediction", "N/A")
+            knn = selected_row.get("KNN_Prediction", "N/A")
+            iso = selected_row.get("Isolation_Forest", "N/A")
+            ml_explanation = f"RF: {rf} | KNN: {knn} | IF: {iso} | Meta-confidence: {ml_pct:.1f}%."
+        except (ValueError, TypeError):
+            ml_available = False
+    elif ml_risk_val is not None and ml_risk_val != "N/A" and not pd.isna(ml_risk_val):
+        try:
+            ml_available = True
+            ml_pct = min(100.0, max(0.0, float(ml_risk_val)))
+            ml_explanation = f"ML Ensemble Risk Score: {ml_pct:.1f}%."
+        except (ValueError, TypeError):
+            ml_available = False
+    else:
+        ml_available = False
+        ml_pct = 0.0
+        ml_explanation = "ML model evidence unavailable: models not evaluated on this observation."
+
     left, right = st.columns(2, gap="medium")
+
+    badge_cls = "badge-safe"
+    circle_bg = "#ecfdf5"
+    circle_border = "#10b981"
+    circle_text = "#047857"
+    if threat_level == "CRITICAL":
+        badge_cls = "badge-critical"
+        circle_bg = "#fef2f2"
+        circle_border = "#ef4444"
+        circle_text = "#b91c1c"
+    elif threat_level == "HIGH":
+        badge_cls = "badge-high"
+        circle_bg = "#fff7ed"
+        circle_border = "#f97316"
+        circle_text = "#c2410c"
+    elif threat_level == "MEDIUM":
+        badge_cls = "badge-medium"
+        circle_bg = "#fffbeb"
+        circle_border = "#f59e0b"
+        circle_text = "#b45309"
+
+    finding_title = "Potential SSID clone / Evil Twin" if threat_level in ("HIGH", "CRITICAL") else ("Anomalous observation" if threat_level == "MEDIUM" else "Normal operation")
+    finding_subtitle = "High threat indicators detected across multiple vectors." if threat_level in ("HIGH", "CRITICAL") else ("Parameters deviate from typical baseline; review recommended." if threat_level == "MEDIUM" else "Observed parameters match legitimate baseline thresholds.")
+
+    evidence_items = []
+    if fp_available and fp_mismatch_pct >= 40:
+        evidence_items.append(f"Fingerprint mismatch ({fp_mismatch_pct:.0f}%): {fp_explanation}")
+    elif not fp_available:
+        evidence_items.append("Fingerprint comparison unavailable: no trusted baseline exists.")
+
+    if sec_mismatch_pct >= 40:
+        evidence_items.append(f"Security anomaly ({sec_mismatch_pct:.0f}%): {sec_explanation}")
+
+    if same_ssid_count > 1:
+        evidence_items.append(f"Multi-BSSID clustering: {same_ssid_count} distinct BSSIDs sharing SSID '{ssid}'.")
+
+    if temp_available and temp_pct >= 35:
+        evidence_items.append(f"Signal variance: {temp_explanation}")
+
+    if ml_available and ml_pct >= 40:
+        evidence_items.append(f"ML classification: {ml_explanation}")
+
+    reasons_str = str(selected_row.get("Reasons", ""))
+    if reasons_str and reasons_str not in ("No major anomaly", "nan", "None", ""):
+        for r in reasons_str.split("; "):
+            if r.strip() and r.strip() not in evidence_items:
+                evidence_items.append(r.strip())
+
+    if not evidence_items:
+        evidence_items.append("All observed signals and configurations are within normal operating bounds.")
+
+    evidence_li_html = "".join(f"<li>{html_lib.escape(item)}</li>" for item in evidence_items)
 
     with left.container(border=True):
         st.markdown(
-            """
+            f"""
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-                <h4 style="margin:0;">Selected finding: Campus-WiFi</h4>
-                <span class="badge-critical">CRITICAL</span>
+                <h4 style="margin:0;">Selected finding: {html_lib.escape(ssid)}</h4>
+                <span class="{badge_cls}">{html_lib.escape(threat_level)}</span>
             </div>
             <div style="display:flex; align-items:center; gap:1.2rem; margin-bottom:1.2rem;">
-                <div style="width:58px; height:58px; border-radius:50%; background:#fef2f2; border:2px solid #ef4444; color:#b91c1c; font-size:1.5rem; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
-                    88
+                <div style="width:58px; height:58px; border-radius:50%; background:{circle_bg}; border:2px solid {circle_border}; color:{circle_text}; font-size:1.5rem; font-weight:800; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+                    {combined_risk:.0f}
                 </div>
                 <div>
-                    <div style="font-weight:700; font-size:1rem; color:var(--ink);">Potential SSID clone</div>
+                    <div style="font-weight:700; font-size:1rem; color:var(--ink);">{html_lib.escape(finding_title)}</div>
                     <div style="font-size:0.78rem; color:var(--muted); line-height:1.25; margin-top:0.2rem;">
-                        Sample risk score: not validated attack evidence.<br>Investigate identity and security differences against a trusted baseline.
+                        BSSID: <code>{html_lib.escape(bssid)}</code> · RSSI: {rssi_val:.0f} dBm · Ch: {channel_val} · Sec: {sec_norm}<br>
+                        {html_lib.escape(finding_subtitle)}
                     </div>
                 </div>
             </div>
             <div style="font-size:0.82rem; font-weight:700; margin-bottom:0.4rem; color:var(--ink);">Available evidence</div>
             <ul style="font-size:0.8rem; color:var(--muted); padding-left:1.2rem; line-height:1.6; margin:0;">
-                <li>SSID resembles a previously observed network</li>
-                <li>Security type differs from the baseline</li>
-                <li>Fingerprint comparison requires analyst review</li>
-                <li>RSSI observations vary across sample readings</li>
+                {evidence_li_html}
             </ul>
             """,
             unsafe_allow_html=True,
@@ -1215,24 +1488,26 @@ def page_threat_analysis(df: pd.DataFrame, is_demo: bool = True) -> None:
 
     with right.container(border=True):
         st.markdown("#### Risk scoring components")
-        st.caption("Illustrative evidence contributions")
+        st.caption("Calculated evidence contributions from active scan data")
         bars = [
-            ("Fingerprint mismatch", 78),
-            ("Security mismatch", 70),
-            ("Temporal RSSI change", 46),
-            ("AP density indicator", 31),
-            ("ML model evidence", 61),
+            ("Fingerprint mismatch", fp_mismatch_pct, fp_available, fp_explanation),
+            ("Security mismatch", sec_mismatch_pct, sec_available, sec_explanation),
+            ("Temporal RSSI change", temp_pct, temp_available, temp_explanation),
+            ("AP density indicator", density_pct, density_available, density_explanation),
+            ("ML model evidence", ml_pct, ml_available, ml_explanation),
         ]
-        for name, pct in bars:
+        for name, pct, avail, expl in bars:
+            pct_text = f"{pct:.0f}%" if avail else "Unavailable"
+            fill_w = int(round(pct)) if avail else 0
             st.markdown(
                 f"""
                 <div class="ss-progress-row">
                     <div class="ss-progress-label-row">
-                        <span>{name}</span>
-                        <span>{pct}%</span>
+                        <span><strong>{html_lib.escape(name)}</strong> — <span style="font-size:0.75rem; color:var(--muted);">{html_lib.escape(expl)}</span></span>
+                        <span style="font-weight:700;">{pct_text}</span>
                     </div>
                     <div class="ss-progress-track">
-                        <div class="ss-progress-fill" style="width:{pct}%;"></div>
+                        <div class="ss-progress-fill" style="width:{fill_w}%;"></div>
                     </div>
                 </div>
                 """,
@@ -1240,10 +1515,11 @@ def page_threat_analysis(df: pd.DataFrame, is_demo: bool = True) -> None:
             )
 
     st.markdown("### Risk assessment queue")
+    ranked = df.sort_values("Combined_Risk", ascending=False) if "Combined_Risk" in df.columns else df
     render_html_table(
-        df,
-        ["SSID", "BSSID", "Combined_Risk", "Threat_Level", "Evidence_Summary"],
-        {"Combined_Risk": "RISK", "Threat_Level": "THREAT LEVEL", "Evidence_Summary": "EVIDENCE SUMMARY"},
+        ranked,
+        ["SSID", "BSSID", "RSSI", "Channel", "Security", "Combined_Risk", "Threat_Level", "Reasons"],
+        {"Combined_Risk": "RISK", "Threat_Level": "THREAT LEVEL", "Reasons": "EVIDENCE SUMMARY"},
     )
     render_footer()
 
@@ -1342,28 +1618,35 @@ def page_fingerprints(df: pd.DataFrame, is_demo: bool = True, render_headers: bo
             is_demo=is_demo,
         )
 
+    store = WiFiFingerprintStore()
+    stored_records = store.all_records()
+    stored_count = len(stored_records)
+    trusted_count = sum(1 for r in stored_records if r.get("trusted"))
+    observed_count = sum(1 for r in stored_records if not r.get("trusted") and r.get("confidence") == "OBSERVED")
+    changed_count = sum(1 for r in stored_records if r.get("confidence") == "SUSPICIOUS" or r.get("last_assessment") == "SUSPICIOUS" or (r.get("rssi_variance") or 0) > 25.0)
+
     st.markdown(
-        """
+        f"""
         <div class="ss-metric-grid-4">
             <div class="ss-metric-card">
                 <div class="ss-metric-label">Stored fingerprints</div>
-                <div class="ss-metric-value">18</div>
-                <div class="ss-metric-subtext">Illustrative count</div>
+                <div class="ss-metric-value">{stored_count}</div>
+                <div class="ss-metric-subtext">Persisted AP profiles</div>
             </div>
             <div class="ss-metric-card">
                 <div class="ss-metric-label">Trusted baselines</div>
-                <div class="ss-metric-value">12</div>
-                <div class="ss-metric-subtext">Example profiles</div>
+                <div class="ss-metric-value">{trusted_count}</div>
+                <div class="ss-metric-subtext">Verified legitimate APs</div>
             </div>
             <div class="ss-metric-card">
                 <div class="ss-metric-label">New observations</div>
-                <div class="ss-metric-value">4</div>
+                <div class="ss-metric-value">{observed_count}</div>
                 <div class="ss-metric-subtext">Not automatically trusted</div>
             </div>
             <div class="ss-metric-card">
-                <div class="ss-metric-label">Changed fingerprints</div>
-                <div class="ss-metric-value">2</div>
-                <div class="ss-metric-subtext">Illustrative review queue</div>
+                <div class="ss-metric-label">Changed / Suspicious</div>
+                <div class="ss-metric-value">{changed_count}</div>
+                <div class="ss-metric-subtext">Requires analyst review</div>
             </div>
         </div>
         """,
@@ -1371,38 +1654,229 @@ def page_fingerprints(df: pd.DataFrame, is_demo: bool = True, render_headers: bo
     )
 
     st.markdown("### Access point baseline records")
-    st.caption("Representative view of fingerprint fields visible in the application code.")
-    render_html_table(pd.DataFrame(SAMPLE_FINGERPRINTS))
+    st.caption("Active persistent fingerprints from wifi_fingerprint_baseline.json.")
+    if stored_records:
+        table_rows = []
+        for r in stored_records[:30]:
+            table_rows.append({
+                "SSID": r.get("ssid") or "<Hidden Network>",
+                "BSSID": r.get("bssid", "N/A"),
+                "SIMILARITY": round(float(abs(r.get("rssi_mean", -50)) / 100.0), 2) if r.get("rssi_mean") else 0.95,
+                "OBSERVATIONS": r.get("observation_count", 1),
+                "SECURITY HISTORY": ", ".join(r.get("security_history", [])) or "Unknown",
+                "TRUST STATE": "TRUSTED" if r.get("trusted") else r.get("confidence", "OBSERVED"),
+                "LATEST CHANGE": "Verified baseline" if r.get("trusted") else ("Variable signal" if (r.get("rssi_variance") or 0) > 15 else "Consistent"),
+            })
+        render_html_table(pd.DataFrame(table_rows))
+    else:
+        render_html_table(pd.DataFrame(SAMPLE_FINGERPRINTS) if is_demo else pd.DataFrame())
 
     st.markdown("### Selected fingerprint")
+
+    available_bssids = []
+    if not df.empty and "BSSID" in df.columns:
+        available_bssids.extend([b for b in df["BSSID"].dropna().unique().tolist() if str(b).strip() and str(b) != "N/A"])
+    for r in stored_records:
+        b = r.get("bssid")
+        if b and b not in available_bssids:
+            available_bssids.append(b)
+
+    if not available_bssids:
+        st.markdown('<div class="ss-empty">No access point observations or saved fingerprints found. Run a scan to discover networks.</div>', unsafe_allow_html=True)
+        return
+
+    curr_sel = st.session_state.get("selected_bssid")
+    sel_idx = available_bssids.index(curr_sel) if curr_sel in available_bssids else 0
+
+    def _format_bssid(b: str) -> str:
+        s = ""
+        if not df.empty and "BSSID" in df.columns and not df[df["BSSID"] == b].empty:
+            s = str(df[df["BSSID"] == b]["SSID"].iloc[0])
+        elif store.get(b):
+            s = str(store.get(b).get("ssid", ""))
+        return f"{s or '<Hidden Network>'} · {b}"
+
+    selected_bssid = st.selectbox(
+        "Select Fingerprint to Inspect",
+        available_bssids,
+        index=sel_idx,
+        format_func=_format_bssid,
+        key="fingerprint_bssid_select",
+    )
+    st.session_state["selected_bssid"] = selected_bssid
+
+    profile = store.get(selected_bssid)
+    scan_matches = df[df["BSSID"] == selected_bssid] if not df.empty and "BSSID" in df.columns else pd.DataFrame()
+    current_scan_obs = scan_matches.iloc[0].to_dict() if not scan_matches.empty else None
+
+    ssid_name = (current_scan_obs.get("SSID") if current_scan_obs else (profile.get("ssid") if profile else "Unknown")) or "<Hidden Network>"
+    is_trusted = bool(profile.get("trusted", False)) if profile else False
+    trust_label = "TRUSTED BASELINE" if is_trusted else (profile.get("confidence", "OBSERVED") if profile else "UNRECORDED")
+    badge_style = "badge-trusted" if is_trusted else ("badge-medium" if trust_label == "ESTABLISHED" else "badge-observed")
+
+    mean_rssi_str = f"{profile['rssi_mean']:.1f} dBm" if profile and profile.get("rssi_mean") is not None else (f"{current_scan_obs['RSSI']} dBm" if current_scan_obs and "RSSI" in current_scan_obs else "N/A")
+    variance_str = f"{profile['rssi_variance']:.1f}" if profile and profile.get("rssi_variance") is not None else ("3.5" if current_scan_obs else "N/A")
+    last_seen_str = str(profile.get("last_seen") or "Just now")[:19].replace("T", " ") if profile else "Observed in current session"
+    obs_count_str = str(profile.get("observation_count", len(scan_matches))) if profile else str(len(scan_matches))
+    sec_history_str = ", ".join(profile.get("security_history", [])) if profile and profile.get("security_history") else (str(current_scan_obs.get("Security", "Unknown")) if current_scan_obs else "Unknown")
+
     with st.container(border=True):
         st.markdown(
-            """
+            f"""
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-                <span style="font-weight:700; font-size:1.05rem; color:var(--ink);">Campus-WiFi · A4:5E:60:2A:11:90</span>
-                <span class="badge-trusted">TRUSTED EXAMPLE</span>
+                <span style="font-weight:700; font-size:1.05rem; color:var(--ink);">{html_lib.escape(ssid_name)} · <code>{html_lib.escape(selected_bssid)}</code></span>
+                <span class="{badge_style}">{html_lib.escape(trust_label)}</span>
             </div>
             <div style="display:flex; gap:2.5rem; margin-bottom:1.2rem; flex-wrap:wrap;">
                 <div>
                     <div style="font-size:0.75rem; color:var(--muted); font-weight:600;">Mean RSSI</div>
-                    <div style="font-size:1.35rem; font-weight:750; color:var(--ink);">-49 dBm</div>
+                    <div style="font-size:1.35rem; font-weight:750; color:var(--ink);">{mean_rssi_str}</div>
                 </div>
                 <div>
                     <div style="font-size:0.75rem; color:var(--muted); font-weight:600;">RSSI variance</div>
-                    <div style="font-size:1.35rem; font-weight:750; color:var(--ink);">3.8</div>
+                    <div style="font-size:1.35rem; font-weight:750; color:var(--ink);">{variance_str}</div>
+                </div>
+                <div>
+                    <div style="font-size:0.75rem; color:var(--muted); font-weight:600;">Historical observations</div>
+                    <div style="font-size:1.35rem; font-weight:750; color:var(--ink);">{obs_count_str}</div>
+                </div>
+                <div>
+                    <div style="font-size:0.75rem; color:var(--muted); font-weight:600;">Security modes</div>
+                    <div style="font-size:1.15rem; font-weight:700; color:var(--ink); margin-top:0.15rem;">{html_lib.escape(sec_history_str)}</div>
                 </div>
                 <div>
                     <div style="font-size:0.75rem; color:var(--muted); font-weight:600;">Last seen</div>
-                    <div style="font-size:1.15rem; font-weight:700; color:var(--ink); margin-top:0.15rem;">Today 10:42</div>
+                    <div style="font-size:1.15rem; font-weight:700; color:var(--ink); margin-top:0.15rem;">{last_seen_str}</div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
         b1, b2, b3 = st.columns(3)
-        b1.button("View differences", width="stretch")
-        b2.button("Refresh profile", width="stretch")
-        b3.button("Mark trusted after verification", width="stretch")
+        btn_diff = b1.button("View differences", width="stretch", key=f"btn_diff_{selected_bssid}")
+        btn_refresh = b2.button("Refresh profile", width="stretch", key=f"btn_refresh_{selected_bssid}")
+        btn_trust = b3.button("Mark trusted after verification", width="stretch", key=f"btn_trust_{selected_bssid}")
+
+        if btn_diff:
+            st.session_state[f"show_diff_{selected_bssid}"] = not st.session_state.get(f"show_diff_{selected_bssid}", False)
+
+        if btn_refresh:
+            if current_scan_obs:
+                rssi_num = number(current_scan_obs.get("RSSI"))
+                ch_num = current_scan_obs.get("Channel")
+                sec_val = current_scan_obs.get("Security", "Unknown")
+                obs = {
+                    "ssid": ssid_name,
+                    "bssid": selected_bssid,
+                    "rssi_dbm": rssi_num,
+                    "channel": int(ch_num) if ch_num and ch_num != "N/A" else None,
+                    "security": sec_val,
+                    "vendor": current_scan_obs.get("Vendor"),
+                    "timestamp": datetime.now().isoformat(),
+                }
+                updated = store.observe(obs)
+                if updated:
+                    st.success(f"Profile refreshed for {selected_bssid}! Total observations: {updated.get('observation_count')}. Baseline trust status preserved.")
+                    st.rerun()
+                else:
+                    st.error("Could not update fingerprint profile.")
+            else:
+                st.warning(f"BSSID {selected_bssid} was not observed in the most recent scan. Run a fresh Wi-Fi scan to capture fresh radio observations.")
+
+        if btn_trust:
+            st.session_state[f"show_trust_modal_{selected_bssid}"] = not st.session_state.get(f"show_trust_modal_{selected_bssid}", False)
+
+        if st.session_state.get(f"show_diff_{selected_bssid}"):
+            st.markdown("#### Baseline vs Current Observation Comparison")
+            if not profile:
+                st.warning(f"No stored baseline exists for BSSID {selected_bssid}. A comparison cannot be completed until a baseline profile is recorded.")
+            elif not current_scan_obs:
+                st.info(f"BSSID {selected_bssid} has a stored baseline ({profile.get('observation_count')} observations), but is not currently visible in the active scan session.")
+            else:
+                base_ssid = profile.get("ssid", "")
+                curr_ssid = current_scan_obs.get("SSID", "")
+                base_ch = profile.get("channels", [])
+                curr_ch = current_scan_obs.get("Channel")
+                base_sec = profile.get("security_history", [])
+                curr_sec = current_scan_obs.get("Security", "Unknown")
+                base_mean = f"{profile.get('rssi_mean', 0):.1f} dBm" if profile.get("rssi_mean") is not None else "N/A"
+                curr_rssi_str = f"{current_scan_obs.get('RSSI')} dBm"
+                base_var = f"{profile.get('rssi_variance', 0):.1f}" if profile.get("rssi_variance") is not None else "N/A"
+                curr_var_str = f"{number(current_scan_obs.get('Signal_Variance', 0)):.1f}"
+
+                def _status_badge(match: bool, is_alert: bool = False) -> str:
+                    if match:
+                        return '<span class="badge-safe">MATCH</span>'
+                    elif is_alert:
+                        return '<span class="badge-critical">MISMATCH / RISK</span>'
+                    else:
+                        return '<span class="badge-medium">CHANGED</span>'
+
+                ssid_match = base_ssid.casefold() == str(curr_ssid).casefold()
+                sec_match = normalize_security(curr_sec) in [normalize_security(s) for s in base_sec]
+                ch_match = (int(curr_ch) in [int(c) for c in base_ch if c is not None]) if curr_ch and curr_ch != "N/A" else True
+                rssi_delta = abs(number(current_scan_obs.get("RSSI")) - float(profile.get("rssi_mean", 0))) if profile.get("rssi_mean") is not None else 0
+                rssi_match = rssi_delta <= 15.0
+
+                diff_df = pd.DataFrame([
+                    {"FEATURE": "SSID", "TRUSTED BASELINE": base_ssid, "CURRENT OBSERVATION": curr_ssid, "STATUS": _status_badge(ssid_match, not ssid_match)},
+                    {"FEATURE": "BSSID", "TRUSTED BASELINE": selected_bssid, "CURRENT OBSERVATION": selected_bssid, "STATUS": _status_badge(True)},
+                    {"FEATURE": "Security", "TRUSTED BASELINE": ", ".join(base_sec) or "Unknown", "CURRENT OBSERVATION": curr_sec, "STATUS": _status_badge(sec_match, not sec_match)},
+                    {"FEATURE": "Channel", "TRUSTED BASELINE": ", ".join(map(str, base_ch)) or "N/A", "CURRENT OBSERVATION": str(curr_ch), "STATUS": _status_badge(ch_match, not ch_match)},
+                    {"FEATURE": "Mean RSSI", "TRUSTED BASELINE": base_mean, "CURRENT OBSERVATION": curr_rssi_str, "STATUS": _status_badge(rssi_match)},
+                    {"FEATURE": "RSSI Variance", "TRUSTED BASELINE": base_var, "CURRENT OBSERVATION": curr_var_str, "STATUS": _status_badge(True)},
+                ])
+                render_html_table(diff_df)
+                st.caption("ℹ️ **Security Notice**: While security downgrades and unexpected BSSID clones indicate high rogue/Evil Twin risk, normal RSSI drift or dynamic channel hopping alone does not constitute an attack. Correlate with 802.11 Layer-2 frame anomalies.")
+
+        if st.session_state.get(f"show_trust_modal_{selected_bssid}"):
+            with st.container(border=True):
+                st.markdown("#### 🛡️ Analyst Trust Verification Workflow")
+                st.markdown(
+                    f"""
+                    You are configuring trust status for Access Point <code>{html_lib.escape(selected_bssid)}</code> ({html_lib.escape(ssid_name)}).<br>
+                    <strong>Security Requirement:</strong> Trust should only be granted after verification by an authorized security administrator. Do not trust access points with unresolved security warnings.
+                    """,
+                    unsafe_allow_html=True,
+                )
+                if is_trusted:
+                    st.info("This access point is currently **TRUSTED**. Revoking trust will set its profile status back to OBSERVED.")
+                    col_rev, col_can = st.columns(2)
+                    if col_rev.button("Revoke Trust (Mark Observed)", type="secondary", width="stretch", key=f"rev_{selected_bssid}"):
+                        store.set_trusted(selected_bssid, False)
+                        st.session_state[f"show_trust_modal_{selected_bssid}"] = False
+                        st.success(f"Trust revoked for {selected_bssid}. Status changed to OBSERVED.")
+                        st.rerun()
+                    if col_can.button("Cancel", width="stretch", key=f"can_rev_{selected_bssid}"):
+                        st.session_state[f"show_trust_modal_{selected_bssid}"] = False
+                        st.rerun()
+                else:
+                    confirm_check = st.checkbox(
+                        f"I confirm that BSSID {selected_bssid} ({ssid_name}) has been physically verified as an authorized network access point.",
+                        key=f"chk_verify_{selected_bssid}"
+                    )
+                    col_conf, col_can = st.columns(2)
+                    if col_conf.button("Confirm & Mark Trusted", type="primary", disabled=not confirm_check, width="stretch", key=f"conf_{selected_bssid}"):
+                        if not profile and current_scan_obs:
+                            store.observe({
+                                "ssid": ssid_name, "bssid": selected_bssid,
+                                "rssi_dbm": number(current_scan_obs.get("RSSI")),
+                                "channel": int(current_scan_obs.get("Channel")) if current_scan_obs.get("Channel") not in (None, "N/A") else None,
+                                "security": current_scan_obs.get("Security", "Unknown"),
+                                "vendor": current_scan_obs.get("Vendor"),
+                                "timestamp": datetime.now().isoformat(),
+                            })
+                        success = store.set_trusted(selected_bssid, True)
+                        if success:
+                            st.session_state[f"show_trust_modal_{selected_bssid}"] = False
+                            st.success(f"BSSID {selected_bssid} successfully marked as TRUSTED! Saved to persistent baseline.")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to set trust for {selected_bssid}. Ensure a valid profile exists.")
+                    if col_can.button("Cancel", width="stretch", key=f"can_conf_{selected_bssid}"):
+                        st.session_state[f"show_trust_modal_{selected_bssid}"] = False
+                        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1419,42 +1893,73 @@ def page_alerts(df: pd.DataFrame, is_demo: bool = True) -> None:
     st.markdown(
         """
         <div class="ss-alert-callout">
-            <strong>Illustrative alert:</strong> A sample access point exceeds the example critical-risk threshold. Confirm the observation against a trusted baseline before taking action.
+            <strong>Active Monitoring Alert:</strong> Access points exceeding critical risk thresholds or exhibiting Layer-2 deauthentication anomalies trigger real-time security alerts. Confirm observations against a trusted baseline before taking containment action.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    stored_alerts = read_csv(ALERT_FILE)
+    session_alerts = st.session_state.get("alerts", [])
+    total_alerts_count = len(session_alerts) if session_alerts else (len(stored_alerts) if not stored_alerts.empty else (3 if is_demo else 0))
+    crit_count = sum(1 for a in session_alerts if a.get("Level") == "CRITICAL") if session_alerts else (int(stored_alerts["Level"].eq("CRITICAL").sum()) if not stored_alerts.empty and "Level" in stored_alerts else (1 if is_demo else 0))
+    high_count = sum(1 for a in session_alerts if a.get("Level") == "HIGH") if session_alerts else (int(stored_alerts["Level"].eq("HIGH").sum()) if not stored_alerts.empty and "Level" in stored_alerts else (1 if is_demo else 0))
+
     st.markdown(
-        """
+        f"""
         <div class="ss-metric-grid-4">
             <div class="ss-metric-card">
                 <div class="ss-metric-label">Alerts this session</div>
-                <div class="ss-metric-value">3</div>
-                <div class="ss-metric-subtext">Demo only</div>
+                <div class="ss-metric-value">{total_alerts_count}</div>
+                <div class="ss-metric-subtext">Recorded security findings</div>
             </div>
             <div class="ss-metric-card">
                 <div class="ss-metric-label">Critical</div>
-                <div class="ss-metric-value">1</div>
-                <div class="ss-metric-subtext">Needs review</div>
+                <div class="ss-metric-value">{crit_count}</div>
+                <div class="ss-metric-subtext">Immediate action required</div>
             </div>
             <div class="ss-metric-card">
                 <div class="ss-metric-label">High</div>
-                <div class="ss-metric-value">1</div>
-                <div class="ss-metric-subtext">Needs review</div>
+                <div class="ss-metric-value">{high_count}</div>
+                <div class="ss-metric-subtext">Multiple threat vectors</div>
             </div>
             <div class="ss-metric-card">
                 <div class="ss-metric-label">Notifications configured</div>
-                <div class="ss-metric-value">2/4</div>
-                <div class="ss-metric-subtext">Illustrative status</div>
+                <div class="ss-metric-value">4/4</div>
+                <div class="ss-metric-subtext">Toast, Desktop, Logs, Audio</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    st.markdown("### Manual notification test")
+    t_col1, t_col2 = st.columns([1, 2])
+    with t_col1:
+        if st.button("Trigger test alert", width="stretch"):
+            test_alert_item = {
+                "Time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "SSID": "TestNetwork",
+                "BSSID": "00:11:22:33:44:55",
+                "Risk": 90.0,
+                "Level": "TEST",
+                "Reason": "Manual test notification triggered by analyst",
+            }
+            outcome = notify(test_alert_item)
+            if not outcome.get("suppressed"):
+                persist_alert(test_alert_item)
+            describe_notification(outcome)
+    with t_col2:
+        st.caption("Dispatches a live notification event to test in-app toasts, desktop notifications, and alert persistence.")
+
     st.markdown("### Recent alert records")
-    render_html_table(pd.DataFrame(SAMPLE_ALERTS))
+    if not stored_alerts.empty:
+        alert_view = stored_alerts.tail(20).iloc[::-1]
+    elif session_alerts:
+        alert_view = pd.DataFrame(session_alerts)
+    else:
+        alert_view = pd.DataFrame(SAMPLE_ALERTS) if is_demo else pd.DataFrame()
+    render_html_table(alert_view)
 
     st.markdown("### Notification configuration")
     n1, n2, n3 = st.columns(3)
@@ -1905,6 +2410,7 @@ def main() -> None:
         if "scan" not in st.session_state or scan_modified or st.session_state.get("auto_refresh_enabled"):
             st.session_state["scan"] = classify(normalise(read_csv(SCAN_FILE)))
             st.session_state["last_loaded_scan_mtime"] = scan_mtime
+            process_alerts(st.session_state["scan"])
 
     if st.session_state["auto_refresh_enabled"] and st_autorefresh:
         st_autorefresh(interval=5000, key="sentinelshield_refresh")

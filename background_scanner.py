@@ -13,6 +13,15 @@ from typing import Any
 from scanner import scan_wifi
 
 
+class ScanStatus:
+    IDLE = "idle"
+    SCANNING = "scanning"
+    ANALYZING = "analyzing"
+    COMPLETE = "completed"
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
 class BackgroundScanner:
     """Background Wi-Fi scanner used by the Streamlit dashboard."""
 
@@ -24,6 +33,8 @@ class BackgroundScanner:
         self.networks: list[dict[str, Any]] = []
         self.error: str | None = None
         self.last_scan_time: str | None = None
+        self.ml_available: bool = True
+        self.start_time: float = 0.0
 
         self.scan_thread: threading.Thread | None = None
 
@@ -41,12 +52,14 @@ class BackgroundScanner:
 
     def get_status(self) -> dict[str, Any]:
         with self.lock:
+            elapsed = (time.time() - self.start_time) if (self.start_time and self.status in ("scanning", "analyzing")) else 0
             return {
                 "status": self.status,
                 "progress": self.progress,
                 "networks_found": len(self.networks),
                 "error": self.error,
                 "last_scan_time": self.last_scan_time,
+                "elapsed_time": elapsed,
                 "scan_mode": "live",
             }
 
@@ -80,6 +93,7 @@ class BackgroundScanner:
             self.status = "scanning"
             self.progress = 5
             self.error = None
+            self.start_time = time.time()
 
         self.scan_thread = threading.Thread(
             target=self._scan_worker,

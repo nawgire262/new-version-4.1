@@ -29,8 +29,9 @@ def check_environment():
     
     missing = []
     for pkg, description in dependencies.items():
+        import_mod = 'sklearn' if pkg == 'scikit-learn' else pkg
         try:
-            __import__(pkg)
+            __import__(import_mod)
             print(f"✓ {pkg:15} - {description}")
         except ImportError:
             print(f"✗ {pkg:15} - MISSING!")
