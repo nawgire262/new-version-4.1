@@ -14,6 +14,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -1530,6 +1531,18 @@ def page_threat_analysis(df: pd.DataFrame, is_demo: bool = True) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # 05. ML Detection Page (Matches PDF Page 5)
 # ─────────────────────────────────────────────────────────────────────────────
+def _clean_num(val: Any, default: float = 0.0) -> float:
+    if val is None or pd.isna(val):
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip().replace(" dBm", "").replace("dBm", "").replace(" MHz", "").replace("MHz", "").replace("%", "").strip()
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
 @st.cache_resource(show_spinner=False)
 def _load_ml_suite():
     """Centralized model-management loader for RF, KNN, Isolation Forest, and Meta-Classifier."""
@@ -1663,11 +1676,14 @@ def page_ai(df: pd.DataFrame, is_demo: bool = True) -> None:
         if sec not in security_classes:
             sec = "WPA2" if sec != "OPEN" and "WPA2" in security_classes else "Open" if "Open" in security_classes else security_classes[0]
 
-        rssi = float(row.get("RSSI", -70) if pd.notna(row.get("RSSI")) else -70)
-        freq = float(row.get("Frequency_MHz", 2412) if pd.notna(row.get("Frequency_MHz")) else (row.get("Channel", 1) * 5 + 2407))
+        rssi = _clean_num(row.get("RSSI"), default=-70.0)
+        freq = _clean_num(row.get("Frequency_MHz"), default=0.0)
+        if freq <= 0:
+            ch_num = _clean_num(row.get("Channel"), default=1.0)
+            freq = (ch_num * 5.0 + 2407.0) if ch_num < 100 else ch_num
         sec_enc = int(le_sec.transform([sec])[0])
-        ap_count = float(row.get("AP_Count", 1) if pd.notna(row.get("AP_Count")) else 1)
-        sig_var = float(row.get("Signal_Var", 2.0) if pd.notna(row.get("Signal_Var")) else 2.0)
+        ap_count = max(1.0, _clean_num(row.get("AP_Count"), default=1.0))
+        sig_var = _clean_num(row.get("Signal_Var"), default=2.0)
 
         raw_features.append([rssi, freq, sec_enc, ap_count, sig_var])
         ap_metadata.append({"BSSID": bssid, "SSID": ssid, "Security": sec, "RSSI": rssi, "Frequency_MHz": freq, "Signal_Var": sig_var})
