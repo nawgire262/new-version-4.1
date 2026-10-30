@@ -46,6 +46,56 @@ def render_behavioral_dashboard() -> None:
     ml_engine: BehavioralHybridMLEngine = st.session_state["hybrid_ml_engine"]
     ac_engine: AdaptiveAccessControlEngine = st.session_state["access_control_engine"]
 
+    # ── 5.1 Behavioral Intelligence Overview ────────────────────────────────
+    trail = ac_engine.get_audit_trail(100)
+    records_analyzed = len(trail)
+    records_eligible = records_analyzed
+    anomalies_detected = sum(1 for d in trail if d.get("risk_level") in ["HIGH", "CRITICAL"])
+    suspicious_patterns = sum(1 for d in trail if d.get("action") in ["STEP_UP_MFA", "CHALLENGE_REAUTH", "TERMINATE_QUARANTINE"])
+    latest_ts = trail[-1].get("timestamp", "None recorded") if trail else "None recorded"
+    if latest_ts != "None recorded" and len(latest_ts) >= 19:
+        latest_ts_fmt = latest_ts[:19].replace("T", " ")
+    else:
+        latest_ts_fmt = latest_ts
+
+    st.markdown(
+        f"""
+        <div class="ss-metric-grid-4">
+            <div class="ss-metric-card">
+                <div class="ss-metric-label">Records Analyzed</div>
+                <div class="ss-metric-value">{records_analyzed}</div>
+                <div class="ss-metric-subtext">Total behavioral sessions</div>
+            </div>
+            <div class="ss-metric-card">
+                <div class="ss-metric-label">Detected Anomalies</div>
+                <div class="ss-metric-value">{anomalies_detected}</div>
+                <div class="ss-metric-subtext">High / critical behavioral deviations</div>
+            </div>
+            <div class="ss-metric-card">
+                <div class="ss-metric-label">Suspicious Patterns</div>
+                <div class="ss-metric-value">{suspicious_patterns}</div>
+                <div class="ss-metric-subtext">MFA / challenge escalations</div>
+            </div>
+            <div class="ss-metric-card">
+                <div class="ss-metric-label">Analysis Status</div>
+                <div class="ss-metric-value" style="font-size:1.05rem; font-weight:700;">ONLINE</div>
+                <div class="ss-metric-subtext">Active telemetry & benchmark mode</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── 5.2 Privacy & Ethical Compliance Guardrail ───────────────────────────
+    st.markdown(
+        """
+        <div class="ss-warning-callout" style="margin: 1rem 0; border-left: 4px solid #3b82f6; background-color: #f0f7ff; color: #1e3a8a;">
+            <b>🔒 PRIVACY &amp; ETHICAL COMPLIANCE GUARDRAIL:</b> Zero Raw Keystroke Capture Guarantee. SentinelShield never records keystroke characters, plaintext passwords, or raw inputs. Biometric telemetry is strictly restricted to consented inter-key timing intervals (ms) in an isolated laboratory sandbox. Background keylogging hooks are blocked by design.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.subheader("1. Interactive Behavioral Profile & Telemetry Generator")
     st.caption("Select a behavioral scenario or adjust parameters to test the real-time detection pipeline:")
 
@@ -101,7 +151,7 @@ def render_behavioral_dashboard() -> None:
     }
 
     selected_key = st.selectbox(
-        "Select Behavioral Scenario",
+        "Select Behavioral Scenario [BENCHMARK TEST MODE]",
         list(scenarios.keys()),
         format_func=lambda k: scenarios[k]["name"],
     )
@@ -122,7 +172,7 @@ def render_behavioral_dashboard() -> None:
     if test_wpm != preset["wpm"]:
         duration_ms = max(50.0, (char_count / 5.0) / (test_wpm / 60000.0))
 
-    # Fabricate event sequence
+    # Fabricate event sequence (Strictly timing intervals, zero plaintext characters captured)
     events: list[KeystrokeEvent] = []
     current_time = 0.0
     intervals: list[float] = []
@@ -190,9 +240,10 @@ def render_behavioral_dashboard() -> None:
 
     with col_a:
         st.markdown("#### 🔬 Behavioral Biometrics (Keystroke Dynamics)")
-        st.write(f"- **Observed Typing Speed:** `{bio_eval.typing_speed_wpm:.1f} WPM`")
-        st.write(f"- **Mean Flight Time:** `{bio_eval.mean_flight_time_ms:.1f} ms` (Baseline: 115 ms)")
-        st.write(f"- **Key Dwell Time:** `{bio_eval.mean_dwell_time_ms:.1f} ms` (Baseline: 80 ms)")
+        st.write(f"- **Observed Typing Speed:** `{bio_eval.typing_speed_wpm:.1f} WPM` (Baseline: 60 WPM)")
+        st.write(f"- **Mean Flight Time:** `{bio_eval.mean_flight_time_ms:.1f} ms` (Baseline: 120 ms)")
+        st.write(f"- **Key Dwell Time:** `{bio_eval.mean_dwell_time_ms:.1f} ms` (Baseline: 85 ms)")
+        st.write(f"- **Timing Variability (Std):** `{bio_eval.std_flight_time_ms:.1f} ms`")
         st.write(f"- **Error / Backspace Rate:** `{bio_eval.error_rate*100:.1f}%`")
         st.write(f"- **Biometric Anomaly Flag:** `{'YES ⚠️' if bio_eval.is_anomaly else 'NO (Normal)'}`")
         for r in bio_eval.reasons:
@@ -200,27 +251,39 @@ def render_behavioral_dashboard() -> None:
 
     with col_b:
         st.markdown("#### 🤖 Over-Efficiency & Bot Automation Analysis")
-        st.write(f"- **Throughput Velocity:** `{eff_eval.char_per_sec:.1f} char/sec`")
+        st.write(f"- **Throughput Velocity:** `{eff_eval.char_per_sec:.1f} char/sec` (Human Max: 18.0)")
         st.write(f"- **Form Completion Time:** `{eff_eval.duration_ms:.0f} ms`")
-        st.write(f"- **Temporal Clockwork Index:** `{eff_eval.uniformity_index:.3f}` (1.0 = synthetic)")
+        st.write(f"- **Inter-Key Uniformity Index:** `{eff_eval.uniformity_index:.3f}` (1.0 = machine clockwork)")
+        st.write(f"- **Automation Classification:** `{eff_eval.classification}`")
         st.write(f"- **Script / Bot Detection:** `{'AUTOMATED SCRIPT 🚨' if eff_eval.is_automated else 'HUMAN OPERATED'}`")
         for r in eff_eval.reasons:
             st.caption(f"• {r}")
 
+    # Section 5.3: Timing Interval Distribution Chart
+    st.markdown("#### 📊 Inter-Key Interval Cadence & Regularity Spectrum")
+    cadence_df = pd.DataFrame({
+        "Keystroke Sequence": list(range(1, len(intervals) + 1)),
+        "Flight Interval (ms)": intervals,
+        "Human Expected Baseline (ms)": [120.0] * len(intervals),
+    }).set_index("Keystroke Sequence")
+    st.line_chart(cadence_df)
+
+    # Section 5.4: Access Control and Behavioral Risk Matrix
     st.markdown("#### 🌲 Hybrid Machine Learning Strategy (Isolation Forest + Random Forest)")
     c_ml1, c_ml2, c_ml3 = st.columns(3)
     c_ml1.metric("Random Forest Bot Confidence", f"{ml_eval.rf_confidence:.1f}%")
     c_ml2.metric("Isolation Forest Anomaly", "OUTLIER (-1)" if ml_eval.iso_anomaly else "INLIER (+1)")
     c_ml3.metric("Composite Hybrid Score", f"{ml_eval.hybrid_threat_score:.1f}%")
 
-    st.caption("**Feature Importance Distribution in Decision:**")
+    st.caption("**Feature Importance Distribution in Behavioral Decision:**")
     st.bar_chart(pd.DataFrame(list(ml_eval.feature_contributions.items()), columns=["Feature", "Contribution %"]).set_index("Feature"))
 
     st.divider()
-    st.subheader("3. Adaptive Security Policy Audit Trail")
-    trail = ac_engine.get_audit_trail(15)
-    if trail:
-        st.dataframe(pd.DataFrame(trail)[["timestamp", "user_id", "risk_score", "risk_level", "action", "action_details"]], use_container_width=True)
+    st.subheader("3. Access Control & Behavioral Risk Audit Trail")
+    st.caption("Immutable tamper-evident record of behavioral telemetry evaluations and adaptive policy decisions:")
+    trail_display = ac_engine.get_audit_trail(15)
+    if trail_display:
+        st.dataframe(pd.DataFrame(trail_display)[["timestamp", "user_id", "risk_score", "risk_level", "action", "action_details"]], use_container_width=True)
     else:
         st.info("No security enforcement events recorded yet.")
 

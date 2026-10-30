@@ -130,11 +130,12 @@ class ReportGenerator:
         risks = self._risk_series(scan)
         avg_risk = float(risks.mean()) if not risks.empty else 0.0
         max_risk = float(risks.max()) if not risks.empty else 0.0
+        unique_aps = int(scan["BSSID"].dropna().astype(str).str.upper().nunique()) if "BSSID" in scan and not scan.empty else len(scan)
         summary_rows = [
             ["Metric", "Result", "Metric", "Result"],
-            ["Networks scanned", str(len(scan)), "Recorded alerts", str(len(alerts))],
+            ["Total observations", str(len(scan)), "Unique Access Points", str(unique_aps)],
             ["High / critical threats", str(high_critical), "Critical threats", str(critical)],
-            ["Average risk", f"{avg_risk:.1f}%", "Maximum risk", f"{max_risk:.1f}%"],
+            ["Average risk score", f"{avg_risk:.1f}%", "Recorded alerts", str(len(alerts))],
         ]
         summary_table = Table(summary_rows, colWidths=[1.8 * inch, 1.1 * inch, 1.8 * inch, 1.1 * inch])
         summary_table.setStyle(TableStyle([
@@ -173,6 +174,59 @@ class ReportGenerator:
         if len(scan) > 100:
             elements.append(Paragraph(f"Showing first 100 of {len(scan)} scanned networks.", styles["Italic"]))
 
+        # Section: Machine Learning Ensemble Assessment & XAI
+        try:
+            import json
+            ml_rows = []
+            features_imp = []
+            if Path("permutation_importance.json").is_file():
+                p_data = json.loads(Path("permutation_importance.json").read_text(encoding="utf-8"))
+                for feat in p_data.get("features", []):
+                    features_imp.append(f"{feat.get('label', feat.get('feature'))}: {float(feat.get('importance', 0)):.4f}")
+            ml_summary_text = (
+                "<b>Detection Stack:</b> Hybrid stacked ensemble combining Random Forest (200 estimators), "
+                "K-Nearest Neighbors (k=5), and Isolation Forest outlier filtering with Logistic Regression meta-classification. "
+                + (f"<br/><b>Global Feature Importances:</b> {', '.join(features_imp)}" if features_imp else "")
+            )
+            elements.extend([
+                Spacer(1, 14),
+                Paragraph("Machine Learning Ensemble &amp; Explainability (XAI)", styles["Heading2"]),
+                Paragraph(ml_summary_text, styles["Normal"]),
+                Spacer(1, 6),
+            ])
+        except Exception:
+            pass
+
+        # Section: Fingerprint Baselines & Trust Status
+        try:
+            import json
+            baseline_file = Path("wifi_fingerprint_baseline.json")
+            if baseline_file.is_file():
+                baseline_data = json.loads(baseline_file.read_text(encoding="utf-8"))
+                profiles = baseline_data.get("profiles", {})
+                trusted_list = baseline_data.get("trusted_bssids", [])
+                fp_rows = []
+                for bssid, p in list(profiles.items())[:30]:
+                    fp_rows.append({
+                        "BSSID": bssid,
+                        "SSID": p.get("ssid", "<hidden>"),
+                        "Vendor": p.get("vendor", "Unknown"),
+                        "Expected_Sec": p.get("security", "Unknown"),
+                        "Samples": p.get("samples_seen", 1),
+                        "Trusted": "YES (Verified)" if bssid in trusted_list else "UNVERIFIED",
+                    })
+                if fp_rows:
+                    fp_df = pd.DataFrame(fp_rows)
+                    fp_table = self._table(fp_df, ["BSSID", "SSID", "Vendor", "Expected_Sec", "Samples", "Trusted"], page_width, styles, max_rows=30)
+                    elements.extend([
+                        Spacer(1, 14),
+                        Paragraph(f"Access Point Fingerprint Baselines ({len(profiles)} tracked, {len(trusted_list)} verified trusted)", styles["Heading2"]),
+                        fp_table,
+                    ])
+        except Exception:
+            pass
+
+        # Section: Cloud Threat Intelligence
         cloud_table = self._table(
             scan,
             ["SSID", "BSSID", "VirusTotal_Risk", "AbuseIPDB_Risk", "BSSID_Reputation", "OpenPhish_Risk", "Cloud_Risk"],
@@ -180,6 +234,34 @@ class ReportGenerator:
         )
         if cloud_table is not None:
             elements.extend([Spacer(1, 14), Paragraph("Cloud Threat Intelligence", styles["Heading2"]), cloud_table])
+        else:
+            try:
+                import json
+                cache_file = Path("threat_intelligence_cache.json")
+                if cache_file.is_file():
+                    c_data = json.loads(cache_file.read_text(encoding="utf-8"))
+                    intel_rows = []
+                    for bssid, provs in list(c_data.items())[:20]:
+                        vt = provs.get("VirusTotal", {})
+                        ab = provs.get("AbuseIPDB", {})
+                        op = provs.get("OpenPhish", {})
+                        intel_rows.append({
+                            "BSSID": bssid,
+                            "VirusTotal": "Hit" if vt.get("hit") else ("Not Configured" if vt.get("error") else "Clean"),
+                            "AbuseIPDB": "Hit" if ab.get("hit") else ("Not Configured" if ab.get("error") else "Clean"),
+                            "OpenPhish": "Hit" if op.get("hit") else "Clean",
+                            "Last_Checked": (vt.get("checked_at") or ab.get("checked_at") or "")[:19].replace("T", " "),
+                        })
+                    if intel_rows:
+                        intel_df = pd.DataFrame(intel_rows)
+                        intel_table = self._table(intel_df, ["BSSID", "VirusTotal", "AbuseIPDB", "OpenPhish", "Last_Checked"], page_width, styles, max_rows=20)
+                        elements.extend([
+                            Spacer(1, 14),
+                            Paragraph(f"Threat Intelligence Cache ({len(c_data)} BSSIDs evaluated)", styles["Heading2"]),
+                            intel_table,
+                        ])
+            except Exception:
+                pass
 
         elements.extend([
             Spacer(1, 18),
@@ -191,6 +273,21 @@ class ReportGenerator:
         elements.append(alert_table or Paragraph("No alerts have been recorded.", styles["Normal"]))
         if len(alerts) > 100:
             elements.append(Paragraph(f"Showing first 100 of {len(alerts)} alerts.", styles["Italic"]))
+
+        # Section: Methodology and Data Limitations Statement
+        elements.extend([
+            Spacer(1, 18),
+            Paragraph("Methodology &amp; Data Limitations", styles["Heading2"]),
+            Paragraph(
+                "<b>Detection Methodology:</b> SentinelShield correlates physical signal measurements (RSSI stability, channel allocation, "
+                "beacon timing variance) with cryptographic configurations (WPA2/WPA3 parameters, OUI vendor validation) and machine learning "
+                "anomaly classifications. Threat risk percentages are computed using weighted evidence fusion.<br/>"
+                "<b>Data Limitations:</b> Wi-Fi scans capture broadcast beacon frames subject to RF propagation characteristics, multipath interference, "
+                "and transient environmental shielding. Isolated signal variations do not constitute definitive malicious intent without corroborating "
+                "fingerprint or security configuration discrepancies.",
+                styles["Normal"],
+            ),
+        ])
 
         def add_page_number(canvas, doc):
             canvas.saveState()
